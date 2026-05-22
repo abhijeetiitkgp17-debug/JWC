@@ -1,0 +1,1711 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>CT × JWC Investment Simulator</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>body{font-family:'Inter',system-ui,sans-serif;margin:0}.font-mono{font-family:'JetBrains Mono',Menlo,monospace}.tabular-nums{font-variant-numeric:tabular-nums}#loading{display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:12px;color:#57534e;font-family:'Inter',sans-serif}.spinner{width:32px;height:32px;border:3px solid #e7e5e4;border-top-color:#d97706;border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body class="bg-stone-100">
+<div id="loading"><div class="spinner"></div><div style="font-size:13px">Loading simulator…</div></div>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+
+/* ============================================================
+   CT × JWC POST-INVESTMENT SIMULATOR
+   Excel-faithful spreadsheet UI.
+   Layout, rows, columns, and yellow-input cells match the source
+   workbook (CT_JWC_Post_Strat_Invest_v_16.xlsx) one-to-one.
+   ============================================================ */
+
+
+const storage = {
+  async list(prefix) {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(prefix)) keys.push(k);
+    }
+    return { keys };
+  },
+  async get(key) { const v = localStorage.getItem(key); return v ? { value: v } : null; },
+  async set(key, value) { localStorage.setItem(key, value); return { value }; },
+  async delete(key) { localStorage.removeItem(key); return { deleted: true }; },
+};
+
+// --- Initial cap-table (rows 5-20 in Excel) ---
+const INVESTORS = [
+  { id: "gaurav",   name: "Gaurav Mehta",   pct: 0.7446, group: "founder" },
+  { id: "pratibha", name: "Pratibha Mehta", pct: 0.0000, group: "founder" },
+  { id: "A", name: "Investor A", pct: 0.0123, group: "group1" },
+  { id: "B", name: "Investor B", pct: 0.0409, group: "group1" },
+  { id: "C", name: "Investor C", pct: 0.0041, group: "group1" },
+  { id: "D", name: "Investor D", pct: 0.0041, group: "group1" },
+  { id: "E", name: "Investor E", pct: 0.0082, group: "group1" },
+  { id: "F", name: "Investor F", pct: 0.0082, group: "group1" },
+  { id: "G", name: "Investor G", pct: 0.0172, group: "group2" },
+  { id: "H", name: "Investor H", pct: 0.0020, group: "group2" },
+  { id: "I", name: "Investor I", pct: 0.0480, group: "group2" },
+  { id: "J", name: "Investor J", pct: 0.0400, group: "group2" },
+  { id: "K", name: "Investor K", pct: 0.0096, group: "group1" },
+  { id: "L", name: "Investor L", pct: 0.0192, group: "group2" },
+  { id: "M", name: "Investor M", pct: 0.0293, group: "group1" },
+  { id: "N", name: "Investor N", pct: 0.0123, group: "group1" },
+];
+
+const INITIAL_SHARES = 12234;
+const CR = 1e7;
+
+// --- Scenario presets matching the four uploaded Excel files ---
+const PRESETS = {
+  current: {
+    label: "Current (v16)",
+    p1: {
+      valuation: 500_000_000, founderSecPct: 0.06, newInvTargetStake: 0.327641,
+      grp1ExitVal: 280_000_000, grp2ExitVal: 550_000_000, founderExitVal: 500_000_000,
+      exits: { gaurav: true, G: true, H: true, I: true, J: true, L: true },
+    },
+    p2: {
+      valuation: 700_000_000, founderSecPct: 0.08, newInvTargetStake: 0.245469,
+      grp1ExitVal: 280_000_000, grp2ExitVal: 700_000_000, founderExitVal: 700_000_000,
+      exits: { gaurav: true, A: true, B: true, C: true, D: true, E: true, F: true, M: true, N: true },
+    },
+  },
+  scen1: {
+    label: "Scenario 1",
+    p1: {
+      valuation: 500_000_000, founderSecPct: 0.06, newInvTargetStake: 0.426730,
+      grp1ExitVal: 280_000_000, grp2ExitVal: 550_000_000, founderExitVal: 548_552_000,
+      exits: { gaurav: true, A: true, B: true, C: true, D: true, E: true, F: true, G: true, H: true, I: true, J: true, L: true, M: true, N: true },
+    },
+    p2: {
+      valuation: 700_000_000, founderSecPct: 0.08, newInvTargetStake: 0.098400,
+      grp1ExitVal: 280_000_000, grp2ExitVal: 700_000_000, founderExitVal: 700_000_000,
+      exits: { gaurav: true },
+    },
+  },
+  scen2: {
+    label: "Scenario 2 — No Investor Exits",
+    p1: {
+      valuation: 500_000_000, founderSecPct: 0.36, newInvTargetStake: 0.471360,
+      grp1ExitVal: 280_000_000, grp2ExitVal: 550_000_000, founderExitVal: 550_000_000,
+      exits: { gaurav: true },
+    },
+    p2: {
+      valuation: 700_000_000, founderSecPct: 0.00, newInvTargetStake: 0.082000,
+      grp1ExitVal: 280_000_000, grp2ExitVal: 700_000_000, founderExitVal: 700_000_000,
+      exits: {},
+    },
+  },
+  scen3: {
+    label: "Scenario 3 — Tough Don't Exit",
+    p1: {
+      valuation: 500_000_000, founderSecPct: 0.06, newInvTargetStake: 0.323497,
+      grp1ExitVal: 280_000_000, grp2ExitVal: 550_000_000, founderExitVal: 500_000_000,
+      exits: { gaurav: true, A: true, B: true, C: true, D: true, E: true, F: true, M: true, N: true },
+    },
+    p2: {
+      valuation: 700_000_000, founderSecPct: 0.15, newInvTargetStake: 0.218000,
+      grp1ExitVal: 280_000_000, grp2ExitVal: 700_000_000, founderExitVal: 700_000_000,
+      exits: { gaurav: true },
+    },
+  },
+};
+
+// --- Computation: matches Excel P-1 / P-2 formulas exactly ---
+// Supports two drive modes:
+//   driveBy === 'target' (default): user sets target stake %, primary derived
+//   driveBy === 'primary': user sets primary cash directly, target stake derived
+function computeTranche({ pctMap, startShares, tr }) {
+  const basePrice = tr.valuation / startShares;
+  const grp1PPS = tr.grp1ExitVal / startShares;
+  const grp2PPS = tr.grp2ExitVal / startShares;
+  const founderPPS = tr.founderExitVal / startShares;
+
+  const gauravTotalSh = (pctMap.gaurav || 0) * startShares;
+  const gauravSecSh = (tr.exits.gaurav ? tr.founderSecPct : 0) * startShares;
+  const gauravSecShClamped = Math.min(gauravSecSh, gauravTotalSh);
+  const founderSecCash = gauravSecShClamped * founderPPS;
+
+  const rows = INVESTORS.map((inv) => {
+    const startSh = (pctMap[inv.id] || 0) * startShares;
+    const startPct = pctMap[inv.id] || 0;
+    const startVal = startSh * basePrice;
+    let exitSh = 0, exitCash = 0, exitPct = 0, exitPps = 0;
+    if (inv.id === "gaurav") {
+      exitSh = gauravSecShClamped;
+      exitCash = founderSecCash;
+      exitPct = startShares > 0 ? exitSh / startShares : 0;
+      exitPps = founderPPS;
+    } else if (inv.id === "pratibha") {
+      // never exits
+    } else if (tr.exits[inv.id]) {
+      exitSh = startSh;
+      exitPct = startPct;
+      exitPps = inv.group === "group2" ? grp2PPS : grp1PPS;
+      exitCash = exitSh * exitPps;
+    }
+    const remainingSh = startSh - exitSh;
+    return { ...inv, startSh, startPct, startVal, exitSh, exitCash, exitPct, exitPps, remainingSh };
+  });
+
+  const invSecSh = rows.filter(r => r.id !== "gaurav" && r.id !== "pratibha").reduce((a, r) => a + r.exitSh, 0);
+  const invSecCash = rows.filter(r => r.id !== "gaurav" && r.id !== "pratibha").reduce((a, r) => a + r.exitCash, 0);
+
+  const secondaryShares = invSecSh + gauravSecShClamped;
+  const secondaryPct = secondaryShares / startShares;
+
+  // Two modes for setting primary
+  // INTUITIVE FORMULA: newInvTargetStake = the actual final stake the new investor will own (post-money)
+  // In 'target' mode: solve for primary shares so that (secondary + primary) / (start + primary) = target
+  // In 'primary' mode: user types primary cash directly, effective stake = (secondary + primary) / (start + primary)
+  const driveBy = tr.driveBy || 'target';
+  let primaryPct, primarySh, primaryCash, effectiveTargetStake;
+  if (driveBy === 'primary' && tr.primaryCashCr != null && tr.primaryCashCr >= 0) {
+    primaryCash = tr.primaryCashCr * CR;
+    primarySh = basePrice > 0 ? primaryCash / basePrice : 0;
+    const tmpTotalShPost = startShares + primarySh;
+    primaryPct = tmpTotalShPost > 0 ? primarySh / tmpTotalShPost : 0;
+    effectiveTargetStake = tmpTotalShPost > 0 ? (secondaryShares + primarySh) / tmpTotalShPost : 0;
+  } else {
+    // target mode: target IS the literal final stake
+    const target = tr.newInvTargetStake;
+    if (target > 0 && target < 1) {
+      // Solve: target = (secondaryShares + primarySh) / (startShares + primarySh)
+      // => primarySh = (target * startShares - secondaryShares) / (1 - target)
+      primarySh = (target * startShares - secondaryShares) / (1 - target);
+      if (primarySh < 0) primarySh = 0;  // secondaries already exceed target → no primary needed
+    } else {
+      primarySh = 0;
+    }
+    primaryCash = primarySh * basePrice;
+    const tmpTotalShPost = startShares + primarySh;
+    primaryPct = tmpTotalShPost > 0 ? primarySh / tmpTotalShPost : 0;
+    effectiveTargetStake = target;
+  }
+  const totalShPost = startShares + primarySh;
+
+  const postRows = rows.map((r) => ({
+    ...r,
+    postSh: r.remainingSh,
+    postPct: totalShPost > 0 ? r.remainingSh / totalShPost : 0,
+    postVal: r.remainingSh * basePrice,
+  }));
+
+  return {
+    basePrice, grp1PPS, grp2PPS, founderPPS,
+    rows: postRows,
+    secondary: {
+      investorShares: invSecSh, investorCash: invSecCash,
+      founderShares: gauravSecShClamped, founderCash: founderSecCash,
+      totalShares: secondaryShares, totalCash: invSecCash + founderSecCash,
+      pct: secondaryPct, investorPct: invSecSh / startShares,
+    },
+    primary: {
+      shares: primarySh, cash: primaryCash, pct: primaryPct,
+      capital: primaryCash, postPct: totalShPost > 0 ? primarySh / totalShPost : 0,
+    },
+    newInvTotal: {
+      shares: secondaryShares + primarySh,
+      cash: invSecCash + founderSecCash + primaryCash,
+      pct: totalShPost > 0 ? (secondaryShares + primarySh) / totalShPost : 0,
+    },
+    totalSharesPost: totalShPost,
+    totalPostValuation: tr.valuation + primaryCash,
+    startShares,
+    pctMapStart: pctMap,
+    driveBy,
+    effectiveTargetStake,  // what the target stake works out to in this tranche
+  };
+}
+
+function computeBoth(state) {
+  const initialMap = {};
+  INVESTORS.forEach(i => initialMap[i.id] = i.pct);
+  const p1 = computeTranche({ pctMap: initialMap, startShares: INITIAL_SHARES, tr: state.p1 });
+  const p2StartMap = {};
+  p1.rows.forEach(r => p2StartMap[r.id] = r.postPct);
+  p2StartMap.newInv = p1.newInvTotal.pct;
+  const p2 = computeTranche({ pctMap: p2StartMap, startShares: p1.totalSharesPost, tr: state.p2 });
+  return { p1, p2 };
+}
+
+// --- Number formatting (Indian comma style) ---
+const nf2 = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const nf0 = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 });
+const fmtCR = (n) => nf2.format(n / CR);
+const fmtINR = (n) => nf0.format(Math.round(n));
+const fmtSh = (n) => nf0.format(Math.round(n));
+const fmtPct = (n, d = 2) => (n * 100).toFixed(d) + "%";
+
+// =========================================================================
+// Reusable spreadsheet primitives
+// =========================================================================
+
+function YellowInput({ value, onChange, suffix, step = 1, type = "number", min, max, width = "100%" }) {
+  return (
+    <div className="relative inline-flex items-center w-full">
+      <input
+        type={type}
+        value={value}
+        step={step}
+        min={min}
+        max={max}
+        onChange={(e) => onChange(parseFloat(e.target.value || "0"))}
+        className="w-full px-1.5 py-0.5 text-right tabular-nums text-[12px] bg-yellow-200 border border-yellow-500 focus:outline-none focus:ring-1 focus:ring-amber-600 focus:bg-yellow-100"
+        style={{ width }}
+      />
+      {suffix && <span className="absolute right-1 text-[10px] text-stone-600 pointer-events-none font-medium">{suffix}</span>}
+    </div>
+  );
+}
+
+function YellowCheck({ checked, onChange }) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      className={`w-5 h-5 rounded-sm border-2 flex items-center justify-center transition ${
+        checked ? "bg-yellow-300 border-yellow-600" : "bg-white border-stone-400 hover:border-amber-500"
+      }`}
+      title={checked ? "Exiting (V column populated)" : "Not exiting"}
+    >
+      {checked && <span className="text-stone-900 text-xs font-bold leading-none">✓</span>}
+    </button>
+  );
+}
+
+function GroupTag({ group }) {
+  if (group === "group1") return <span className="ml-1.5 px-1 py-px text-[9px] font-bold rounded bg-blue-100 text-blue-800 border border-blue-300">G1</span>;
+  if (group === "group2") return <span className="ml-1.5 px-1 py-px text-[9px] font-bold rounded bg-rose-100 text-rose-800 border border-rose-300">G2</span>;
+  if (group === "founder") return <span className="ml-1.5 px-1 py-px text-[9px] font-bold rounded bg-amber-100 text-amber-900 border border-amber-300">F</span>;
+  return null;
+}
+
+// =========================================================================
+// MAIN SPREADSHEET (P-1 or P-2)
+// =========================================================================
+
+function SheetView({ sheetKey, state, setState, p1Result, p2Result }) {
+  const tr = state[sheetKey];
+  const setTr = (newTr) => setState({ ...state, [sheetKey]: newTr });
+  const result = sheetKey === "p1" ? p1Result : p2Result;
+
+  // For P-2, start shares come from post-P-1; pct map is per-row postPct
+  const startShares = sheetKey === "p1" ? INITIAL_SHARES : p1Result.totalSharesPost;
+  const startPctMap = useMemo(() => {
+    if (sheetKey === "p1") {
+      const m = {};
+      INVESTORS.forEach(i => m[i.id] = i.pct);
+      return m;
+    }
+    const m = {};
+    p1Result.rows.forEach(r => m[r.id] = r.postPct);
+    return m;
+  }, [sheetKey, p1Result]);
+
+  const updateField = (key, val) => setTr({ ...tr, [key]: val });
+  const toggleExit = (id) => setTr({ ...tr, exits: { ...tr.exits, [id]: !tr.exits[id] } });
+  const setAllExits = (val) => {
+    const exits = {};
+    INVESTORS.forEach(i => { if (i.id !== "pratibha") exits[i.id] = val; });
+    setTr({ ...tr, exits });
+  };
+  const setGroupExits = (grp, val) => {
+    const exits = { ...tr.exits };
+    INVESTORS.forEach(i => { if (i.group === grp) exits[i.id] = val; });
+    setTr({ ...tr, exits });
+  };
+
+  const newInvP1Carry = sheetKey === "p2" ? (p1Result.newInvTotal.pct) : 0;
+  const newInvP1Shares = sheetKey === "p2" ? newInvP1Carry * startShares : 0;
+  const newInvP1Val = newInvP1Shares * result.basePrice;
+
+  const accent = sheetKey === "p1" ? "amber" : "emerald";
+  const accentColors = sheetKey === "p1"
+    ? { bg: "bg-amber-50", border: "border-amber-400", text: "text-amber-900", strong: "bg-amber-600" }
+    : { bg: "bg-emerald-50", border: "border-emerald-400", text: "text-emerald-900", strong: "bg-emerald-700" };
+
+  return (
+    <div className="font-mono text-[12px] text-stone-900 select-text">
+      {/* INPUT PANEL — like Excel's "Inputs" section. Yellow background like W5, W29, W32, W36, W40, W42, D27 */}
+      <div className={`${accentColors.bg} border-2 ${accentColors.border} rounded mb-3 p-3`}>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className={`text-[13px] font-bold ${accentColors.text} uppercase tracking-wide`}>
+            {sheetKey === "p1" ? "P-1 Inputs" : "P-2 Inputs"} <span className="text-stone-500 font-normal text-[10px] ml-2">(yellow cells are editable, just like the Excel)</span>
+          </h3>
+        </div>
+        <table className="w-full border-collapse border border-stone-400 bg-white">
+          <thead>
+            <tr className="bg-stone-200 text-[11px]">
+              <th className="border border-stone-400 px-2 py-1 text-left font-semibold w-16">Cell</th>
+              <th className="border border-stone-400 px-2 py-1 text-left font-semibold">Description</th>
+              <th className="border border-stone-400 px-2 py-1 text-right font-semibold w-40">Input</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td className="border border-stone-400 px-2 py-0.5 text-stone-500 font-semibold">D27</td>
+              <td className="border border-stone-400 px-2 py-0.5">
+                Valuation (Pre-money)
+                <span className="ml-2 text-[10px] text-stone-500 italic">→ {fmtSh(startShares)} shares @ ₹{fmtINR(result.basePrice)}/share</span>
+              </td>
+              <td className="border border-stone-400 px-1 py-0.5">
+                <YellowInput value={tr.valuation / CR} step={0.5} onChange={(v) => updateField("valuation", v * CR)} suffix="CR" />
+              </td>
+            </tr>
+            <tr className="border-t-2 border-stone-400">
+              <td className="border border-stone-400 px-2 py-0.5 text-stone-500 font-semibold">W5</td>
+              <td className="border border-stone-400 px-2 py-0.5">Founder Secondary % (Gaurav)</td>
+              <td className="border border-stone-400 px-1 py-0.5">
+                <YellowInput value={+(tr.founderSecPct * 100).toFixed(2)} step={0.5} onChange={(v) => updateField("founderSecPct", v / 100)} suffix="%" />
+              </td>
+            </tr>
+            <tr>
+              <td className="border border-stone-400 px-2 py-0.5 text-stone-500 font-semibold">W29</td>
+              <td className="border border-stone-400 px-2 py-0.5">New Investor Target Stake (post-money)
+                {(tr.driveBy || 'target') === 'target' && <span className="ml-2 text-[9px] text-amber-700 font-bold uppercase">● driving</span>}
+                {(tr.driveBy || 'target') === 'primary' && <span className="ml-2 text-[9px] text-stone-400 italic">(auto-derived from AC24 below — click to override)</span>}
+              </td>
+              <td className="border border-stone-400 px-1 py-0.5">
+                <input
+                  type="number"
+                  value={(tr.driveBy || 'target') === 'target' ? +(tr.newInvTargetStake * 100).toFixed(2) : +(result.effectiveTargetStake * 100).toFixed(2)}
+                  step={0.5}
+                  onChange={(e) => setTr({ ...tr, newInvTargetStake: parseFloat(e.target.value || "0") / 100, driveBy: 'target' })}
+                  className={`w-full px-1.5 py-0.5 text-right tabular-nums text-[12px] rounded focus:outline-none focus:ring-1 focus:ring-amber-600 ${
+                    (tr.driveBy || 'target') === 'target'
+                      ? "bg-yellow-200 border-2 border-amber-500 font-semibold"
+                      : "bg-yellow-50 border border-yellow-300 italic text-stone-600"
+                  }`}
+                />
+              </td>
+            </tr>
+            <tr>
+              <td className="border border-stone-400 px-2 py-0.5 text-stone-500 font-semibold">AC24</td>
+              <td className="border border-stone-400 px-2 py-0.5">Primary Cash Infused
+                {(tr.driveBy || 'target') === 'primary' && <span className="ml-2 text-[9px] text-amber-700 font-bold uppercase">● driving</span>}
+                {(tr.driveBy || 'target') === 'target' && <span className="ml-2 text-[9px] text-stone-400 italic">(auto-derived from W29 above — click to override)</span>}
+              </td>
+              <td className="border border-stone-400 px-1 py-0.5">
+                <input
+                  type="number"
+                  value={(tr.driveBy || 'target') === 'primary' ? (tr.primaryCashCr ?? +(result.primary.cash / CR).toFixed(2)) : +(result.primary.cash / CR).toFixed(2)}
+                  step={0.5}
+                  onChange={(e) => setTr({ ...tr, primaryCashCr: parseFloat(e.target.value || "0"), driveBy: 'primary' })}
+                  className={`w-full px-1.5 py-0.5 text-right tabular-nums text-[12px] rounded focus:outline-none focus:ring-1 focus:ring-amber-600 ${
+                    (tr.driveBy || 'target') === 'primary'
+                      ? "bg-yellow-200 border-2 border-amber-500 font-semibold"
+                      : "bg-yellow-50 border border-yellow-300 italic text-stone-600"
+                  }`}
+                />
+              </td>
+            </tr>
+            <tr className="border-t-2 border-stone-400">
+              <td className="border border-stone-400 px-2 py-0.5 text-stone-500 font-semibold">W34</td>
+              <td className="border border-stone-400 px-2 py-0.5">
+                Group-1 Exit Valuation
+                <span className="ml-2 text-[10px] text-stone-500 italic">→ ₹{fmtINR(result.grp1PPS)}/share</span>
+              </td>
+              <td className="border border-stone-400 px-1 py-0.5">
+                <YellowInput value={tr.grp1ExitVal / CR} step={5} onChange={(v) => updateField("grp1ExitVal", v * CR)} suffix="CR" />
+              </td>
+            </tr>
+            <tr className="border-t-2 border-stone-400">
+              <td className="border border-stone-400 px-2 py-0.5 text-stone-500 font-semibold">W38</td>
+              <td className="border border-stone-400 px-2 py-0.5">
+                Founder Exit Valuation
+                <span className="ml-2 text-[10px] text-stone-500 italic">→ ₹{fmtINR(result.founderPPS)}/share</span>
+              </td>
+              <td className="border border-stone-400 px-1 py-0.5">
+                <YellowInput value={tr.founderExitVal / CR} step={5} onChange={(v) => updateField("founderExitVal", v * CR)} suffix="CR" />
+              </td>
+            </tr>
+            <tr className="border-t-2 border-stone-400">
+              <td className="border border-stone-400 px-2 py-0.5 text-stone-500 font-semibold">W42</td>
+              <td className="border border-stone-400 px-2 py-0.5">
+                Group-2 Exit Valuation
+                <span className="ml-2 text-[10px] text-stone-500 italic">→ ₹{fmtINR(result.grp2PPS)}/share</span>
+              </td>
+              <td className="border border-stone-400 px-1 py-0.5">
+                <YellowInput value={tr.grp2ExitVal / CR} step={5} onChange={(v) => updateField("grp2ExitVal", v * CR)} suffix="CR" />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {/* MAIN GRID — Initial Cap Table | Secondary Stage | Post-Investment */}
+      <div className="overflow-x-auto rounded border-2 border-stone-700 bg-white">
+        <table className="w-full border-collapse text-[12px]">
+          <thead>
+            {/* Section headers — like Excel row 3 */}
+            <tr className="bg-stone-800 text-white text-[11px]">
+              <th rowSpan={2} className="border border-stone-600 px-2 py-1 text-left font-semibold sticky left-0 bg-stone-800 z-10" style={{ minWidth: 200 }}>Investor / Row</th>
+              <th colSpan={4} className="border border-stone-600 px-2 py-1 text-center font-semibold bg-stone-700">Initial Cap Table (cols D–G)</th>
+              <th colSpan={4} className="border border-stone-600 px-2 py-1 text-center font-semibold bg-amber-700">Secondary Stage — FINAL (cols U–X) ★ yellow inputs</th>
+              <th colSpan={4} className="border border-stone-600 px-2 py-1 text-center font-semibold bg-emerald-700">Post-Investment (cols Z–AC)</th>
+            </tr>
+            {/* Sub-headers — like Excel row 4 */}
+            <tr className="bg-stone-700 text-white text-[10px]">
+              <th className="border border-stone-600 px-1 py-1 text-right font-semibold">Capital ₹</th>
+              <th className="border border-stone-600 px-1 py-1 text-right font-semibold"># Shares</th>
+              <th className="border border-stone-600 px-1 py-1 text-right font-semibold">%</th>
+              <th className="border border-stone-600 px-1 py-1 text-right font-semibold">Value ₹</th>
+              <th className="border border-stone-600 px-1 py-1 text-right font-semibold bg-amber-800">Exit?</th>
+              <th className="border border-stone-600 px-1 py-1 text-right font-semibold bg-amber-800"># Shares (V)</th>
+              <th className="border border-stone-600 px-1 py-1 text-right font-semibold bg-amber-800">% (W)</th>
+              <th className="border border-stone-600 px-1 py-1 text-right font-semibold bg-amber-800">Value ₹ (X)</th>
+              <th className="border border-stone-600 px-1 py-1 text-right font-semibold bg-emerald-800">Capital ₹ (Z)</th>
+              <th className="border border-stone-600 px-1 py-1 text-right font-semibold bg-emerald-800"># Shares (AA)</th>
+              <th className="border border-stone-600 px-1 py-1 text-right font-semibold bg-emerald-800">% (AB)</th>
+              <th className="border border-stone-600 px-1 py-1 text-right font-semibold bg-emerald-800">Value ₹ (AC)</th>
+            </tr>
+          </thead>
+          <tbody className="tabular-nums">
+            {/* Quick-toggle row */}
+            <tr className="bg-stone-100">
+              <td className="border border-stone-300 px-2 py-1 text-stone-600 italic text-[10px] sticky left-0 bg-stone-100">Quick exit toggles →</td>
+              <td colSpan={4} className="border border-stone-300 px-2 py-1 text-right text-stone-500 text-[10px]">cap-table is read-only (set from prior tranche)</td>
+              <td colSpan={4} className="border border-stone-300 px-1 py-1 text-center">
+                <div className="flex gap-1 justify-center text-[10px]">
+                  <button onClick={() => setAllExits(true)} className="px-2 py-0.5 rounded border border-stone-400 bg-white hover:bg-stone-100">All</button>
+                  <button onClick={() => setAllExits(false)} className="px-2 py-0.5 rounded border border-stone-400 bg-white hover:bg-stone-100">None</button>
+                  <button onClick={() => setGroupExits("group1", true)} className="px-2 py-0.5 rounded border border-blue-400 bg-blue-50 hover:bg-blue-100 text-blue-800">+G1</button>
+                  <button onClick={() => setGroupExits("group1", false)} className="px-2 py-0.5 rounded border border-blue-300 bg-white hover:bg-blue-50 text-blue-700">−G1</button>
+                  <button onClick={() => setGroupExits("group2", true)} className="px-2 py-0.5 rounded border border-rose-400 bg-rose-50 hover:bg-rose-100 text-rose-800">+G2</button>
+                  <button onClick={() => setGroupExits("group2", false)} className="px-2 py-0.5 rounded border border-rose-300 bg-white hover:bg-rose-50 text-rose-700">−G2</button>
+                </div>
+              </td>
+              <td colSpan={4} className="border border-stone-300 px-2 py-1 text-right text-stone-500 text-[10px]">post-investment is computed</td>
+            </tr>
+
+            {/* Investor rows 5–20 (matching Excel) */}
+            {result.rows.map((r, i) => {
+              const rowNum = i + 5;
+              const exited = r.exitSh > 0.01;
+              const isFounder = r.id === "gaurav" || r.id === "pratibha";
+              const isPratibha = r.id === "pratibha";
+              return (
+                <tr key={r.id} className={`${i % 2 === 0 ? "bg-white" : "bg-stone-50"} hover:bg-yellow-50`}>
+                  <td className="border border-stone-300 px-2 py-0.5 sticky left-0 bg-inherit z-10">
+                    <span className="text-stone-400 text-[10px] mr-1.5 font-mono">{rowNum}</span>
+                    <span className="font-medium">{r.name}</span>
+                    <GroupTag group={r.group} />
+                  </td>
+                  {/* Initial Cap Table */}
+                  <td className="border border-stone-300 px-1 py-0.5 text-right text-stone-500">{r.startVal > 0 ? "₹" + fmtINR(r.startVal) : "—"}</td>
+                  <td className="border border-stone-300 px-1 py-0.5 text-right">{r.startSh > 0 ? fmtSh(r.startSh) : "—"}</td>
+                  <td className="border border-stone-300 px-1 py-0.5 text-right">{r.startPct > 0 ? fmtPct(r.startPct, 2) : "—"}</td>
+                  <td className="border border-stone-300 px-1 py-0.5 text-right text-stone-500">{r.startVal > 0 ? "₹" + fmtINR(r.startVal) : "—"}</td>
+                  {/* Secondary Stage */}
+                  <td className="border border-stone-300 px-1 py-0.5 text-center">
+                    {isPratibha ? <span className="text-stone-300">—</span> :
+                      isFounder ?
+                        <span className="text-[10px] italic text-stone-500" title="Gaurav's secondary % is controlled by W5 above">via W5</span>
+                        : <YellowCheck checked={!!tr.exits[r.id]} onChange={() => toggleExit(r.id)} />
+                    }
+                  </td>
+                  <td className={`border border-stone-300 px-1 py-0.5 text-right ${exited ? "bg-yellow-50 font-semibold" : "text-stone-300"}`}>{r.exitSh > 0.01 ? fmtSh(r.exitSh) : "—"}</td>
+                  <td className={`border border-stone-300 px-1 py-0.5 text-right ${exited ? "bg-yellow-50 font-semibold" : "text-stone-300"}`}>{r.exitPct > 0.0001 ? fmtPct(r.exitPct, 2) : "—"}</td>
+                  <td className={`border border-stone-300 px-1 py-0.5 text-right ${exited ? "bg-yellow-50 font-semibold" : "text-stone-300"}`}>{r.exitCash > 1 ? "₹" + fmtINR(r.exitCash) : "—"}</td>
+                  {/* Post-Investment */}
+                  <td className="border border-stone-300 px-1 py-0.5 text-right text-stone-500">{r.postVal > 1 ? "₹" + fmtINR(r.postVal) : "—"}</td>
+                  <td className="border border-stone-300 px-1 py-0.5 text-right font-medium">{r.postSh > 0.01 ? fmtSh(r.postSh) : "—"}</td>
+                  <td className="border border-stone-300 px-1 py-0.5 text-right font-medium">{r.postPct > 0.0001 ? fmtPct(r.postPct, 2) : "—"}</td>
+                  <td className="border border-stone-300 px-1 py-0.5 text-right text-stone-500">{r.postVal > 1 ? "₹" + fmtINR(r.postVal) : "—"}</td>
+                </tr>
+              );
+            })}
+
+            {/* Row 21: New Investor from P-1 (only relevant in P-2) */}
+            {sheetKey === "p2" && (
+              <tr className="bg-emerald-50">
+                <td className="border border-stone-300 px-2 py-0.5 sticky left-0 bg-emerald-50 z-10">
+                  <span className="text-stone-400 text-[10px] mr-1.5 font-mono">21</span>
+                  <span className="font-medium italic">New Investor (from P-1)</span>
+                  <span className="ml-1.5 px-1 py-px text-[9px] font-bold rounded bg-emerald-200 text-emerald-900 border border-emerald-400">NEW (P-1)</span>
+                </td>
+                <td className="border border-stone-300 px-1 py-0.5 text-right text-stone-500">₹{fmtINR(newInvP1Val)}</td>
+                <td className="border border-stone-300 px-1 py-0.5 text-right">{fmtSh(newInvP1Shares)}</td>
+                <td className="border border-stone-300 px-1 py-0.5 text-right">{fmtPct(newInvP1Carry, 2)}</td>
+                <td className="border border-stone-300 px-1 py-0.5 text-right text-stone-500">₹{fmtINR(newInvP1Val)}</td>
+                <td className="border border-stone-300 px-1 py-0.5 text-center text-stone-300">—</td>
+                <td className="border border-stone-300 px-1 py-0.5 text-right text-stone-300">—</td>
+                <td className="border border-stone-300 px-1 py-0.5 text-right text-stone-300">—</td>
+                <td className="border border-stone-300 px-1 py-0.5 text-right text-stone-300">—</td>
+                <td className="border border-stone-300 px-1 py-0.5 text-right text-stone-500">₹{fmtINR(newInvP1Val)}</td>
+                <td className="border border-stone-300 px-1 py-0.5 text-right font-medium">{fmtSh(newInvP1Shares)}</td>
+                <td className="border border-stone-300 px-1 py-0.5 text-right font-medium">{fmtPct(newInvP1Shares / result.totalSharesPost, 2)}</td>
+                <td className="border border-stone-300 px-1 py-0.5 text-right text-stone-500">₹{fmtINR(newInvP1Val)}</td>
+              </tr>
+            )}
+
+            {/* Separator */}
+            <tr><td colSpan={13} className="border border-stone-300 py-0.5 bg-stone-200"></td></tr>
+
+            {/* Row 22: New Investor (Secondary) - Investor */}
+            <tr className="bg-amber-50">
+              <td className="border border-stone-300 px-2 py-0.5 font-semibold sticky left-0 bg-amber-50 z-10">
+                <span className="text-stone-400 text-[10px] mr-1.5 font-mono">22</span>
+                New Investor (Secondary) — Investor
+              </td>
+              <td colSpan={4} className="border border-stone-300 px-1 py-0.5 text-right text-stone-400">—</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-center text-stone-400">—</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right font-bold">{fmtSh(result.secondary.investorShares)}</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right font-bold">{fmtPct(result.secondary.investorPct, 2)}</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right font-bold">₹{fmtINR(result.secondary.investorCash)}</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right">₹{fmtINR(result.secondary.investorCash)}</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right font-bold">{fmtSh(result.secondary.investorShares)}</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right font-bold">{fmtPct(result.secondary.investorShares / result.totalSharesPost, 2)}</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right">₹{fmtINR(result.secondary.investorShares * result.basePrice)}</td>
+            </tr>
+
+            {/* Row 23: New Investor (Secondary) - Founder */}
+            <tr className="bg-amber-50">
+              <td className="border border-stone-300 px-2 py-0.5 font-semibold sticky left-0 bg-amber-50 z-10">
+                <span className="text-stone-400 text-[10px] mr-1.5 font-mono">23</span>
+                New Investor (Secondary) — Founder
+              </td>
+              <td colSpan={4} className="border border-stone-300 px-1 py-0.5 text-right text-stone-400">—</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-center text-stone-400">—</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right font-bold">{fmtSh(result.secondary.founderShares)}</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right font-bold">{fmtPct(tr.exits.gaurav ? tr.founderSecPct : 0, 2)}</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right font-bold">₹{fmtINR(result.secondary.founderCash)}</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right">₹{fmtINR(result.secondary.founderCash)}</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right font-bold">{fmtSh(result.secondary.founderShares)}</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right font-bold">{fmtPct(result.secondary.founderShares / result.totalSharesPost, 2)}</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right">₹{fmtINR(result.secondary.founderShares * result.basePrice)}</td>
+            </tr>
+
+            {/* Row 24: New Investor (Primary) */}
+            <tr className="bg-emerald-50">
+              <td className="border border-stone-300 px-2 py-0.5 font-semibold sticky left-0 bg-emerald-50 z-10">
+                <span className="text-stone-400 text-[10px] mr-1.5 font-mono">24</span>
+                New Investor (Primary)
+              </td>
+              <td colSpan={8} className="border border-stone-300 px-1 py-0.5 text-right text-stone-400">— (primary issuance below)</td>
+              <td className={`border border-stone-300 px-1 py-0.5 text-right font-bold ${result.primary.cash < 0 ? "text-rose-700" : ""}`}>₹{fmtINR(result.primary.cash)}</td>
+              <td className={`border border-stone-300 px-1 py-0.5 text-right font-bold ${result.primary.shares < 0 ? "text-rose-700" : ""}`}>{fmtSh(result.primary.shares)}</td>
+              <td className={`border border-stone-300 px-1 py-0.5 text-right font-bold ${result.primary.pct < 0 ? "text-rose-700" : ""}`}>{fmtPct(result.primary.postPct, 2)}</td>
+              <td className="border border-stone-300 px-1 py-0.5 text-right">₹{fmtINR(result.primary.cash)}</td>
+            </tr>
+
+            {/* Row 25: Total (New Investor) */}
+            <tr className={`${accentColors.strong} text-white font-bold`}>
+              <td className="border border-stone-600 px-2 py-1 sticky left-0 z-10" style={{ backgroundColor: 'inherit' }}>
+                <span className="text-white/60 text-[10px] mr-1.5 font-mono">25</span>
+                TOTAL (New Investor — this tranche)
+              </td>
+              <td colSpan={4} className="border border-stone-600 px-1 py-1 text-right">—</td>
+              <td className="border border-stone-600 px-1 py-1 text-center">—</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">{fmtSh(result.secondary.totalShares)}</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">{fmtPct(result.secondary.pct, 2)}</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">₹{fmtINR(result.secondary.totalCash)}</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">₹{fmtINR(result.newInvTotal.cash)}</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">{fmtSh(result.newInvTotal.shares)}</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">{fmtPct(result.newInvTotal.pct, 2)}</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">₹{fmtINR(result.newInvTotal.cash)}</td>
+            </tr>
+
+            {/* COMBINED New Investor row — only on P-2: shows cumulative position after both tranches */}
+            {sheetKey === "p2" && (() => {
+              const combinedShares = newInvP1Shares + result.newInvTotal.shares;
+              const combinedPct = result.totalSharesPost > 0 ? combinedShares / result.totalSharesPost : 0;
+              const combinedCash = p1Result.newInvTotal.cash + result.newInvTotal.cash;
+              const combinedValAtP2Price = combinedShares * result.basePrice;
+              return (
+                <tr className="bg-indigo-700 text-white font-bold border-t-2 border-indigo-900">
+                  <td className="border border-indigo-900 px-2 py-1 sticky left-0 bg-indigo-700 z-10">
+                    <span className="text-white/60 text-[10px] mr-1.5 font-mono">★</span>
+                    COMBINED New Investor (P-1 + P-2)
+                  </td>
+                  <td colSpan={4} className="border border-indigo-900 px-1 py-1 text-right text-white/70 text-[10px] italic">total deployed across both tranches →</td>
+                  <td colSpan={4} className="border border-indigo-900 px-1 py-1 text-right text-white/70 text-[10px] italic">cumulative cash: ₹{fmtINR(combinedCash)}</td>
+                  <td className="border border-indigo-900 px-1 py-1 text-right">₹{fmtINR(combinedValAtP2Price)}</td>
+                  <td className="border border-indigo-900 px-1 py-1 text-right">{fmtSh(combinedShares)}</td>
+                  <td className="border border-indigo-900 px-1 py-1 text-right text-yellow-200">{fmtPct(combinedPct, 2)}</td>
+                  <td className="border border-indigo-900 px-1 py-1 text-right">₹{fmtINR(combinedValAtP2Price)}</td>
+                </tr>
+              );
+            })()}
+
+            {/* Separator */}
+            <tr><td colSpan={13} className="border border-stone-300 py-0.5 bg-stone-200"></td></tr>
+
+            {/* Row 27: Total / Valuation */}
+            <tr className="bg-stone-900 text-white font-bold">
+              <td className="border border-stone-600 px-2 py-1 sticky left-0 bg-stone-900 z-10">
+                <span className="text-white/60 text-[10px] mr-1.5 font-mono">27</span>
+                Valuation / Total
+              </td>
+              <td className="border border-stone-600 px-1 py-1 text-right">₹{fmtINR(tr.valuation)}</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">{fmtSh(startShares)}</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">100.00%</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">₹{fmtINR(tr.valuation)}</td>
+              <td colSpan={4} className="border border-stone-600 px-1 py-1 text-right text-white/50">—</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">₹{fmtINR(tr.valuation)}</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">{fmtSh(result.totalSharesPost)}</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">100.00%</td>
+              <td className="border border-stone-600 px-1 py-1 text-right">₹{fmtINR(result.totalPostValuation)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {/* Warning if math doesn't work */}
+      {result.primary.pct < 0 && (
+        <div className="mt-3 px-3 py-2 rounded border-2 border-rose-400 bg-rose-50 text-rose-900 text-[12px] flex items-start gap-2">
+          <span className="font-bold">⚠</span>
+          <span>
+            <strong>Negative primary:</strong> Secondary stake ({fmtPct(result.secondary.pct)}) already exceeds target new-investor stake ({fmtPct(tr.newInvTargetStake)}).
+            Either reduce secondaries (uncheck some exits or lower founder %) or raise the target stake in W29.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =========================================================================
+// DERIVED METRICS — used by Overview and Summary
+// =========================================================================
+function computeMetrics(result) {
+  const totalCash = result.p1.newInvTotal.cash + result.p2.newInvTotal.cash;
+  const newInvP1Shares = result.p1.newInvTotal.pct * result.p1.totalSharesPost;
+  const combinedShares = newInvP1Shares + result.p2.newInvTotal.shares;
+  const finalStake = result.p2.totalSharesPost > 0 ? combinedShares / result.p2.totalSharesPost : 0;
+  const blendedPostMoney = finalStake > 0 ? totalCash / finalStake : 0;
+  const totalPrimary = result.p1.primary.cash + result.p2.primary.cash;
+  const blendedPreMoney = blendedPostMoney - totalPrimary;
+  const blendedPPS = combinedShares > 0 ? totalCash / combinedShares : 0;
+  const founderTotal = result.p1.secondary.founderCash + result.p2.secondary.founderCash;
+  const investorTotal = result.p1.secondary.investorCash + result.p2.secondary.investorCash;
+  const totalSecondary = founderTotal + investorTotal;
+  return {
+    totalCash, finalStake, blendedPostMoney, blendedPreMoney, blendedPPS,
+    combinedShares, newInvP1Shares,
+    founderTotal, investorTotal, totalSecondary, totalPrimary,
+  };
+}
+
+// =========================================================================
+// OVERVIEW SHEET — simplified default view
+// =========================================================================
+
+function BigCard({ label, value, sub, tone = "stone", featured, delta }) {
+  const tones = {
+    emerald: { bg: "bg-emerald-50", border: "border-emerald-300", v: "text-emerald-900", l: "text-emerald-700" },
+    indigo:  { bg: "bg-indigo-50",  border: "border-indigo-300",  v: "text-indigo-900",  l: "text-indigo-700"  },
+    amber:   { bg: "bg-amber-50",   border: "border-amber-400",   v: "text-amber-900",   l: "text-amber-700"   },
+    rose:    { bg: "bg-rose-50",    border: "border-rose-300",    v: "text-rose-900",    l: "text-rose-700"    },
+    blue:    { bg: "bg-blue-50",    border: "border-blue-300",    v: "text-blue-900",    l: "text-blue-700"    },
+    stone:   { bg: "bg-white",      border: "border-stone-300",   v: "text-stone-900",   l: "text-stone-600"   },
+  };
+  const t = tones[tone] || tones.stone;
+  return (
+    <div className={`${t.bg} border-2 ${t.border} rounded-xl p-4 ${featured ? "ring-4 ring-amber-200 shadow-lg" : "shadow-sm"} transition`}>
+      <div className={`text-[11px] font-semibold uppercase tracking-wider ${t.l} mb-1.5`}>{label}</div>
+      <div className={`text-[26px] font-bold tabular-nums ${t.v} leading-none`} style={{ fontFeatureSettings: '"tnum"' }}>{value}</div>
+      {sub && <div className="text-[11px] text-stone-500 mt-2 leading-tight">{sub}</div>}
+      {delta != null && (
+        <div className={`mt-2 text-[11px] tabular-nums font-semibold ${delta > 0 ? "text-rose-600" : delta < 0 ? "text-emerald-600" : "text-stone-400"}`}>
+          {delta > 0 ? "▲" : delta < 0 ? "▼" : "—"} {delta !== 0 && (Math.abs(delta) < 1000 ? "" : "₹" + fmtINR(Math.abs(delta)))}
+          {delta !== 0 && <span className="text-stone-400 font-normal ml-1">vs baseline</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SimpleInput({ label, value, unit, step = 1, onChange, hint }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-1">
+      <div className="flex-1 min-w-0">
+        <div className="text-[12px] text-stone-700 font-medium leading-tight">{label}</div>
+        {hint && <div className="text-[10px] text-stone-400">{hint}</div>}
+      </div>
+      <div className="flex items-center gap-1.5">
+        <input
+          type="number"
+          value={value}
+          step={step}
+          onChange={(e) => onChange(parseFloat(e.target.value || "0"))}
+          className="w-24 px-2 py-1 text-right tabular-nums text-[13px] bg-yellow-100 border border-yellow-400 rounded focus:outline-none focus:ring-2 focus:ring-amber-400 focus:bg-yellow-50"
+        />
+        <span className="text-[11px] text-stone-500 font-medium w-10">{unit}</span>
+      </div>
+    </div>
+  );
+}
+
+function StatRow({ label, value, bold, indent, color }) {
+  return (
+    <div className={`flex justify-between items-baseline py-0.5 ${indent ? "pl-3" : ""}`}>
+      <span className={`text-[12px] ${bold ? "font-semibold text-stone-800" : "text-stone-600"}`}>{label}</span>
+      <span className={`tabular-nums text-[13px] ${bold ? "font-bold text-stone-900" : "text-stone-700"} ${color || ""}`}>{value}</span>
+    </div>
+  );
+}
+
+function SimpleTranchePanel({ label, hint, tone, tr, setTr, result }) {
+  const colors = tone === "amber"
+    ? { bg: "bg-amber-50/60", border: "border-amber-300", text: "text-amber-900", accent: "bg-amber-600" }
+    : { bg: "bg-emerald-50/60", border: "border-emerald-300", text: "text-emerald-900", accent: "bg-emerald-600" };
+
+  const upd = (k, v) => setTr({ ...tr, [k]: v });
+  const toggleExit = (id) => setTr({ ...tr, exits: { ...tr.exits, [id]: !tr.exits[id] } });
+  const setAll = (val) => {
+    const exits = {};
+    INVESTORS.forEach(i => { if (i.id !== "pratibha") exits[i.id] = val; });
+    setTr({ ...tr, exits });
+  };
+  const setGroup = (grp, val) => {
+    const exits = { ...tr.exits };
+    INVESTORS.forEach(i => { if (i.group === grp) exits[i.id] = val; });
+    setTr({ ...tr, exits });
+  };
+
+  return (
+    <div className={`${colors.bg} border-2 ${colors.border} rounded-xl overflow-hidden`}>
+      <div className={`${colors.accent} px-4 py-2.5 text-white`}>
+        <div className="flex items-baseline justify-between">
+          <h3 className="font-bold text-[15px]">{label}</h3>
+          <span className="text-[11px] opacity-80">{hint}</span>
+        </div>
+      </div>
+
+      <div className="bg-white p-3 space-y-0.5">
+        <SimpleInput label="Pre-money Valuation" value={tr.valuation / CR} step={0.5} unit="₹ Cr" onChange={(v) => upd("valuation", v * CR)} />
+        <SimpleInput label="New Investor Target Stake" value={+(tr.newInvTargetStake * 100).toFixed(2)} step={0.5} unit="%" onChange={(v) => upd("newInvTargetStake", v / 100)} />
+        <SimpleInput label="Founder Secondary (Gaurav)" value={+(tr.founderSecPct * 100).toFixed(2)} step={0.5} unit="%" onChange={(v) => upd("founderSecPct", v / 100)} hint="% of company Gaurav sells" />
+
+        <div className="border-t border-stone-200 my-2 pt-2">
+          <div className="text-[10px] uppercase tracking-wider text-stone-500 font-semibold mb-1">Exit Valuations (per buyer pool)</div>
+          <SimpleInput label="Group-1 buys at" value={tr.grp1ExitVal / CR} step={5} unit="₹ Cr" onChange={(v) => upd("grp1ExitVal", v * CR)} hint={`per share ₹${fmtINR(result.grp1PPS)}`} />
+          <SimpleInput label="Group-2 buys at" value={tr.grp2ExitVal / CR} step={5} unit="₹ Cr" onChange={(v) => upd("grp2ExitVal", v * CR)} hint={`per share ₹${fmtINR(result.grp2PPS)}`} />
+          <SimpleInput label="Founder buys at" value={tr.founderExitVal / CR} step={5} unit="₹ Cr" onChange={(v) => upd("founderExitVal", v * CR)} hint={`per share ₹${fmtINR(result.founderPPS)}`} />
+        </div>
+      </div>
+
+      <div className="bg-stone-50 px-3 py-3 border-t border-stone-200">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] uppercase tracking-wider text-stone-600 font-semibold">Investors Exiting This Tranche</span>
+          <div className="flex gap-1 text-[10px]">
+            <button onClick={() => setAll(true)} className="px-1.5 py-0.5 rounded border border-stone-300 bg-white hover:bg-stone-100">All</button>
+            <button onClick={() => setAll(false)} className="px-1.5 py-0.5 rounded border border-stone-300 bg-white hover:bg-stone-100">None</button>
+            <button onClick={() => setGroup("group1", true)} className="px-1.5 py-0.5 rounded border border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-800">+G1</button>
+            <button onClick={() => setGroup("group2", true)} className="px-1.5 py-0.5 rounded border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-800">+G2</button>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {INVESTORS.filter(i => i.id !== "pratibha" && i.id !== "gaurav").map(inv => {
+            const isOn = !!tr.exits[inv.id];
+            const baseCls = "px-2.5 py-1 rounded-full text-[11px] font-semibold transition border";
+            const onCls = inv.group === "group2"
+              ? "bg-rose-600 text-white border-rose-700 hover:bg-rose-700"
+              : "bg-blue-600 text-white border-blue-700 hover:bg-blue-700";
+            const offCls = "bg-white text-stone-500 border-stone-300 hover:bg-stone-100";
+            return (
+              <button key={inv.id} onClick={() => toggleExit(inv.id)} className={`${baseCls} ${isOn ? onCls : offCls}`} title={`${inv.name} (${inv.group === "group2" ? "Group-2" : "Group-1"})`}>
+                {inv.id}{isOn ? " ✓" : ""}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="bg-white px-3 py-3 border-t border-stone-200">
+        <div className="text-[10px] uppercase tracking-wider text-stone-600 font-semibold mb-1.5">What Happens Here</div>
+        <StatRow label="Pre-money valuation" value={`₹${fmtCR(tr.valuation)} Cr`} />
+        <StatRow label="↳ Secondary to investors" value={`₹${fmtCR(result.secondary.investorCash)} Cr`} indent color="text-blue-700" />
+        <StatRow label="↳ Secondary to founder" value={`₹${fmtCR(result.secondary.founderCash)} Cr`} indent color="text-amber-700" />
+        <StatRow label="↳ Primary into company" value={`₹${fmtCR(result.primary.cash)} Cr`} indent color="text-emerald-700" />
+        <div className="border-t border-stone-200 my-1.5"></div>
+        <StatRow label="Total capital required" value={`₹${fmtCR(result.newInvTotal.cash)} Cr`} bold />
+        <StatRow label="New investor stake (this tranche)" value={fmtPct(result.newInvTotal.pct, 2)} bold />
+        <StatRow label="Post-money valuation" value={`₹${fmtCR(result.totalPostValuation)} Cr`} bold />
+        {result.primary.pct < 0 && (
+          <div className="mt-2 px-2 py-1.5 rounded bg-rose-50 border border-rose-300 text-[11px] text-rose-800">
+            ⚠ Secondaries ({fmtPct(result.secondary.pct)}) exceed target stake. Primary went negative.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FinalCapTable({ result }) {
+  const totalShares = result.p2.totalSharesPost;
+  const newInvP1Shares = result.p1.newInvTotal.pct * result.p1.totalSharesPost;
+  const newInvP2New = result.p2.newInvTotal.shares;
+  const newInvCombined = newInvP1Shares + newInvP2New;
+
+  const investorRows = result.p2.rows
+    .filter(r => r.postSh > 0.01)
+    .sort((a, b) => b.postSh - a.postSh);
+
+  return (
+    <div className="bg-white border border-stone-300 rounded-xl overflow-hidden shadow-sm">
+      <div className="px-4 py-3 border-b border-stone-200 bg-stone-50">
+        <h3 className="font-bold text-stone-800 text-[14px]">Final Cap Table — After P-2</h3>
+        <p className="text-[11px] text-stone-500 mt-0.5">All holdings post both tranches, sorted by stake size</p>
+      </div>
+      <table className="w-full text-[13px] tabular-nums">
+        <thead className="bg-stone-100 text-[10px] uppercase tracking-wider text-stone-600">
+          <tr>
+            <th className="text-left px-4 py-2 font-semibold">Holder</th>
+            <th className="text-right px-3 py-2 font-semibold">Shares</th>
+            <th className="text-right px-3 py-2 font-semibold w-24">Stake</th>
+            <th className="text-right px-4 py-2 font-semibold">Value (₹ Cr)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr className="bg-indigo-50 font-bold border-y-2 border-indigo-300">
+            <td className="px-4 py-2 text-indigo-900">
+              ★ New Investor (Combined P-1 + P-2)
+            </td>
+            <td className="text-right px-3 py-2 text-indigo-900">{fmtSh(newInvCombined)}</td>
+            <td className="text-right px-3 py-2 text-indigo-900">{fmtPct(newInvCombined / totalShares, 2)}</td>
+            <td className="text-right px-4 py-2 text-indigo-900">₹{fmtCR(newInvCombined * result.p2.basePrice)}</td>
+          </tr>
+          {investorRows.map((r, i) => (
+            <tr key={r.id} className={i % 2 === 0 ? "bg-white" : "bg-stone-50"}>
+              <td className="px-4 py-1.5 flex items-center">
+                {r.name}
+                <GroupTag group={r.group} />
+              </td>
+              <td className="text-right px-3 py-1.5">{fmtSh(r.postSh)}</td>
+              <td className="text-right px-3 py-1.5">{fmtPct(r.postPct, 2)}</td>
+              <td className="text-right px-4 py-1.5">₹{fmtCR(r.postSh * result.p2.basePrice)}</td>
+            </tr>
+          ))}
+          <tr className="bg-stone-900 text-white font-bold border-t-2 border-stone-700">
+            <td className="px-4 py-2">Total</td>
+            <td className="text-right px-3 py-2">{fmtSh(totalShares)}</td>
+            <td className="text-right px-3 py-2">100.00%</td>
+            <td className="text-right px-4 py-2">₹{fmtCR(result.p2.totalPostValuation)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function OverviewSheet({ state, setState, result, baselineResult }) {
+  const m = computeMetrics(result);
+  const bm = baselineResult ? computeMetrics(baselineResult) : null;
+
+  const dBlended = bm ? m.blendedPostMoney - bm.blendedPostMoney : null;
+  const dCash = bm ? m.totalCash - bm.totalCash : null;
+  const dStake = bm ? (m.finalStake - bm.finalStake) : null;
+  const dFounder = bm ? m.founderTotal - bm.founderTotal : null;
+  const dInvestor = bm ? m.investorTotal - bm.investorTotal : null;
+  const dPrimary = bm ? m.totalPrimary - bm.totalPrimary : null;
+
+  const Delta = ({ value, unit = "Cr", isPct = false }) => {
+    if (value === null || Math.abs(value) < (isPct ? 0.0001 : 1000)) return null;
+    const positive = value > 0;
+    const cls = positive ? "bg-rose-100 text-rose-800" : "bg-emerald-100 text-emerald-800";
+    const sign = positive ? "▲" : "▼";
+    return (
+      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-semibold tabular-nums ${cls} ml-2`}>
+        {sign} {isPct ? Math.abs(value * 100).toFixed(2) + "pp" : "₹" + fmtCR(Math.abs(value)) + " " + unit}
+      </span>
+    );
+  };
+
+  return (
+    <div className="space-y-4 max-w-6xl mx-auto">
+
+      {/* ════ HERO: BLENDED VALUATION ════ */}
+      <div className="relative rounded-2xl bg-gradient-to-br from-amber-100 via-yellow-50 to-amber-50 border-2 border-amber-400 px-8 py-7 shadow-md text-center overflow-hidden">
+        <div className="absolute top-0 right-0 px-3 py-1 bg-amber-500 text-white text-[10px] font-bold uppercase tracking-widest rounded-bl-lg">★ The Answer</div>
+        <div className="text-[12px] font-bold uppercase tracking-[0.2em] text-amber-700 mb-2">
+          New Investor's Blended Valuation
+        </div>
+        <div className="text-[64px] sm:text-[80px] font-bold text-amber-900 tabular-nums leading-none mb-3" style={{ fontFeatureSettings: '"tnum"' }}>
+          ₹{fmtCR(m.blendedPostMoney)}
+          <span className="text-[28px] font-medium text-amber-700 ml-2">Cr</span>
+        </div>
+        <div className="text-[14px] text-stone-700 mb-1">
+          <span className="font-bold text-stone-900">₹{fmtCR(m.totalCash)} Cr</span> invested for{' '}
+          <span className="font-bold text-stone-900">{fmtPct(m.finalStake, 2)}</span> of the company
+          {dBlended !== null && <Delta value={dBlended} />}
+        </div>
+        <div className="text-[11px] text-stone-500">
+          post-money · pre-money ≈ ₹{fmtCR(m.blendedPreMoney)} Cr · ₹{fmtINR(m.blendedPPS).toLocaleString()} per share
+        </div>
+      </div>
+
+      {/* ════ THREE QUICK CARDS ════ */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+
+        {/* What new investor GETS */}
+        <div className="rounded-xl bg-white border border-indigo-200 shadow-sm overflow-hidden">
+          <div className="bg-indigo-600 text-white px-4 py-2 text-[11px] font-bold uppercase tracking-wider">New Investor GETS</div>
+          <div className="p-4">
+            <div className="text-[36px] font-bold tabular-nums text-indigo-900 leading-none mb-1">{fmtPct(m.finalStake, 2)}</div>
+            <div className="text-[12px] text-stone-500 mb-3">of the company after both tranches{dStake !== null && <Delta value={dStake} isPct />}</div>
+            <div className="text-[12px] text-stone-700 space-y-0.5">
+              <div className="flex justify-between"><span>Shares</span><span className="tabular-nums font-medium">{fmtSh(m.combinedShares)}</span></div>
+              <div className="flex justify-between"><span>Valued at</span><span className="tabular-nums font-medium">₹{fmtCR(m.combinedShares * result.p2.basePrice)} Cr</span></div>
+            </div>
+          </div>
+        </div>
+
+        {/* What new investor PAYS */}
+        <div className="rounded-xl bg-white border border-emerald-200 shadow-sm overflow-hidden">
+          <div className="bg-emerald-600 text-white px-4 py-2 text-[11px] font-bold uppercase tracking-wider">New Investor PAYS</div>
+          <div className="p-4">
+            <div className="text-[36px] font-bold tabular-nums text-emerald-900 leading-none mb-1">₹{fmtCR(m.totalCash)}<span className="text-[18px] text-emerald-700 ml-1">Cr</span></div>
+            <div className="text-[12px] text-stone-500 mb-3">total cash across P-1 + P-2{dCash !== null && <Delta value={dCash} />}</div>
+            <div className="text-[12px] text-stone-700 space-y-0.5">
+              <div className="flex justify-between"><span>in P-1</span><span className="tabular-nums font-medium">₹{fmtCR(result.p1.newInvTotal.cash)} Cr</span></div>
+              <div className="flex justify-between"><span>in P-2</span><span className="tabular-nums font-medium">₹{fmtCR(result.p2.newInvTotal.cash)} Cr</span></div>
+            </div>
+          </div>
+        </div>
+
+        {/* Where the MONEY goes */}
+        <div className="rounded-xl bg-white border border-stone-300 shadow-sm overflow-hidden">
+          <div className="bg-stone-700 text-white px-4 py-2 text-[11px] font-bold uppercase tracking-wider">Where MONEY Goes</div>
+          <div className="p-4 space-y-1.5">
+            <div className="flex justify-between items-baseline">
+              <span className="text-[12px] text-amber-700 font-semibold">Founder (Gaurav)</span>
+              <span className="tabular-nums font-bold text-amber-900 text-[15px]">₹{fmtCR(m.founderTotal)} Cr{dFounder !== null && <Delta value={dFounder} />}</span>
+            </div>
+            <div className="flex justify-between items-baseline">
+              <span className="text-[12px] text-blue-700 font-semibold">Other investors</span>
+              <span className="tabular-nums font-bold text-blue-900 text-[15px]">₹{fmtCR(m.investorTotal)} Cr{dInvestor !== null && <Delta value={dInvestor} />}</span>
+            </div>
+            <div className="flex justify-between items-baseline">
+              <span className="text-[12px] text-emerald-700 font-semibold">Into company</span>
+              <span className="tabular-nums font-bold text-emerald-900 text-[15px]">₹{fmtCR(m.totalPrimary)} Cr{dPrimary !== null && <Delta value={dPrimary} />}</span>
+            </div>
+            <div className="border-t border-stone-300 pt-1.5 flex justify-between items-baseline">
+              <span className="text-[11px] uppercase tracking-wider text-stone-500 font-bold">Total</span>
+              <span className="tabular-nums font-bold text-stone-900 text-[15px]">₹{fmtCR(m.totalCash)} Cr</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ════ TRANCHE-BY-TRANCHE STRIP ════ */}
+      <div className="rounded-xl bg-white border border-stone-200 p-4 shadow-sm">
+        <div className="text-[10px] font-bold uppercase tracking-widest text-stone-500 mb-3">Tranche Breakdown</div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="border-l-4 border-amber-500 pl-3">
+            <div className="text-[10px] uppercase tracking-wider text-amber-700 font-bold mb-1">Tranche 1 (P-1)</div>
+            <div className="tabular-nums text-[22px] font-bold text-stone-900 leading-none">₹{fmtCR(result.p1.newInvTotal.cash)} <span className="text-sm font-normal text-stone-500">Cr</span></div>
+            <div className="text-[12px] text-stone-600 mt-1">acquires {fmtPct(result.p1.newInvTotal.pct, 2)} stake</div>
+            <div className="text-[10px] text-stone-400 mt-0.5">@ pre-money ₹{fmtCR(state.p1.valuation)} Cr</div>
+          </div>
+          <div className="border-l-4 border-emerald-500 pl-3">
+            <div className="text-[10px] uppercase tracking-wider text-emerald-700 font-bold mb-1">Tranche 2 (P-2)</div>
+            <div className="tabular-nums text-[22px] font-bold text-stone-900 leading-none">₹{fmtCR(result.p2.newInvTotal.cash)} <span className="text-sm font-normal text-stone-500">Cr</span></div>
+            <div className="text-[12px] text-stone-600 mt-1">adds {fmtPct(m.finalStake - result.p1.newInvTotal.pct, 2)} more stake</div>
+            <div className="text-[10px] text-stone-400 mt-0.5">@ pre-money ₹{fmtCR(state.p2.valuation)} Cr</div>
+          </div>
+          <div className="border-l-4 border-stone-700 pl-3 bg-stone-50 -my-1 py-1 -mr-1 pr-1 rounded-r">
+            <div className="text-[10px] uppercase tracking-wider text-stone-700 font-bold mb-1">Combined</div>
+            <div className="tabular-nums text-[22px] font-bold text-stone-900 leading-none">₹{fmtCR(m.totalCash)} <span className="text-sm font-normal text-stone-500">Cr</span></div>
+            <div className="text-[12px] text-stone-600 mt-1">{fmtPct(m.finalStake, 2)} final stake</div>
+            <div className="text-[10px] text-stone-400 mt-0.5">@ blended ₹{fmtCR(m.blendedPostMoney)} Cr post-money</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ════ ADJUST SCENARIO (collapsible, but open by default for quick tweaks) ════ */}
+      <details open className="rounded-xl bg-white border border-stone-200 shadow-sm overflow-hidden">
+        <summary className="cursor-pointer px-4 py-3 bg-stone-50 hover:bg-stone-100 flex items-center justify-between border-b border-stone-200 select-none">
+          <span className="text-[12px] font-bold uppercase tracking-wider text-stone-700">⚙ Adjust Scenario</span>
+          <span className="text-[10px] text-stone-500 italic">click yellow cells to edit · click ▾ to collapse</span>
+        </summary>
+        <div className="p-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <CompactTranchePanel
+            label="Tranche 1 (P-1)" tone="amber"
+            tr={state.p1} setTr={(p1) => setState({ ...state, p1 })} result={result.p1}
+          />
+          <CompactTranchePanel
+            label="Tranche 2 (P-2)" tone="emerald"
+            tr={state.p2} setTr={(p2) => setState({ ...state, p2 })} result={result.p2}
+          />
+        </div>
+      </details>
+
+      {/* ════ FINAL CAP TABLE (collapsed by default) ════ */}
+      <details className="rounded-xl bg-white border border-stone-200 shadow-sm overflow-hidden">
+        <summary className="cursor-pointer px-4 py-3 bg-stone-50 hover:bg-stone-100 flex items-center justify-between border-b border-stone-200 select-none">
+          <span className="text-[12px] font-bold uppercase tracking-wider text-stone-700">📊 Final Cap Table (Post P-2)</span>
+          <span className="text-[10px] text-stone-500 italic">click to expand</span>
+        </summary>
+        <FinalCapTable result={result} />
+      </details>
+
+      {/* Footer tip */}
+      <div className="text-[11px] text-stone-500 text-center pt-2 pb-1">
+        For row-by-row Excel-style detail, use the <strong>P-1 Detail</strong> / <strong>P-2 Detail</strong> tabs above ↑
+      </div>
+    </div>
+  );
+}
+
+// ────── Compact Tranche Panel (used only on the Overview) ──────
+function CompactTranchePanel({ label, tone, tr, setTr, result }) {
+  const accent = tone === "amber"
+    ? { bar: "bg-amber-500", text: "text-amber-900", soft: "bg-amber-50", border: "border-amber-200" }
+    : { bar: "bg-emerald-500", text: "text-emerald-900", soft: "bg-emerald-50", border: "border-emerald-200" };
+  const upd = (k, v) => setTr({ ...tr, [k]: v });
+  const toggle = (id) => setTr({ ...tr, exits: { ...tr.exits, [id]: !tr.exits[id] } });
+  const setAll = (v) => { const e = {}; INVESTORS.forEach(i => { if (i.id !== "pratibha") e[i.id] = v; }); setTr({ ...tr, exits: e }); };
+  const setGroup = (g, v) => { const e = { ...tr.exits }; INVESTORS.forEach(i => { if (i.group === g) e[i.id] = v; }); setTr({ ...tr, exits: e }); };
+
+  const driveBy = tr.driveBy || 'target';
+
+  // Tiny input renderer: yellow / editable, with subtle "● driving" indicator on the active one
+  const Input = ({ label, suffix, value, step, onChange, driving }) => (
+    <div className="flex items-center justify-between gap-2 py-0.5">
+      <span className="text-[12px] text-stone-700 flex-1 truncate">
+        {label}
+        {driving && <span className="ml-1.5 text-[9px] text-amber-700 font-bold uppercase">● driving</span>}
+      </span>
+      <div className="relative">
+        <input
+          type="number" value={value} step={step}
+          onChange={(e) => onChange && onChange(parseFloat(e.target.value || "0"))}
+          className={`w-20 px-1.5 py-0.5 text-right tabular-nums text-[12px] rounded focus:outline-none focus:ring-2 focus:ring-amber-400 transition ${
+            driving === true
+              ? "bg-yellow-200 border-2 border-amber-500 font-semibold"
+              : driving === false
+                ? "bg-yellow-50 border border-yellow-300 italic text-stone-600"
+                : "bg-yellow-100 border border-yellow-400"
+          }`}
+          title={driving === false ? "Auto-computed from the other value. Type here to override and become the driver." : ""}
+        />
+        <span className="ml-1 text-[10px] text-stone-500 font-medium w-5 inline-block">{suffix}</span>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className={`rounded-lg border ${accent.border} overflow-hidden`}>
+      <div className={`${accent.bar} text-white px-3 py-1.5 flex items-baseline justify-between`}>
+        <span className="font-bold text-[13px]">{label}</span>
+        <span className="text-[10px] opacity-90">→ ₹{fmtCR(result.newInvTotal.cash)} Cr, {fmtPct(result.newInvTotal.pct, 2)}</span>
+      </div>
+
+      {/* Inputs in two columns — both Target Stake and Primary Cash are always editable;
+          whichever you edit last becomes the driver automatically */}
+      <div className={`${accent.soft} px-3 py-2 grid grid-cols-1 sm:grid-cols-2 gap-x-3`}>
+        <Input label="Valuation"          value={tr.valuation / CR}                    step={0.5} suffix="Cr" onChange={(v) => upd("valuation", v * CR)} />
+        <Input label="Founder Secondary"  value={+(tr.founderSecPct * 100).toFixed(2)} step={0.5} suffix="%"  onChange={(v) => upd("founderSecPct", v / 100)} />
+
+        <Input
+          label="Target Stake"
+          value={driveBy === 'target' ? +(tr.newInvTargetStake * 100).toFixed(2) : +(result.effectiveTargetStake * 100).toFixed(2)}
+          step={0.5}
+          suffix="%"
+          driving={driveBy === 'target'}
+          onChange={(v) => setTr({ ...tr, newInvTargetStake: v / 100, driveBy: 'target' })}
+        />
+        <Input
+          label="Primary Cash"
+          value={driveBy === 'primary' ? (tr.primaryCashCr ?? +(result.primary.cash / CR).toFixed(2)) : +(result.primary.cash / CR).toFixed(2)}
+          step={0.5}
+          suffix="Cr"
+          driving={driveBy === 'primary'}
+          onChange={(v) => setTr({ ...tr, primaryCashCr: v, driveBy: 'primary' })}
+        />
+        />
+
+        <Input label="Founder Exit Val"   value={tr.founderExitVal / CR}                step={5}   suffix="Cr" onChange={(v) => upd("founderExitVal", v * CR)} />
+        <Input label="Group-1 Exit Val"   value={tr.grp1ExitVal / CR}                   step={5}   suffix="Cr" onChange={(v) => upd("grp1ExitVal", v * CR)} />
+        <Input label="Group-2 Exit Val"   value={tr.grp2ExitVal / CR}                   step={5}   suffix="Cr" onChange={(v) => upd("grp2ExitVal", v * CR)} />
+      </div>
+
+      {/* Exit pills */}
+      <div className="px-3 py-2 bg-white border-t border-stone-100">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-stone-500">Who exits</span>
+          <div className="flex gap-1 text-[10px]">
+            <button onClick={() => setAll(true)} className="px-1.5 py-0.5 rounded border border-stone-300 hover:bg-stone-100">All</button>
+            <button onClick={() => setAll(false)} className="px-1.5 py-0.5 rounded border border-stone-300 hover:bg-stone-100">None</button>
+            <button onClick={() => setGroup("group1", true)} className="px-1.5 py-0.5 rounded border border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-800">+G1</button>
+            <button onClick={() => setGroup("group2", true)} className="px-1.5 py-0.5 rounded border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-800">+G2</button>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {INVESTORS.filter(i => i.id !== "pratibha" && i.id !== "gaurav").map(inv => {
+            const on = !!tr.exits[inv.id];
+            const onCls = inv.group === "group2" ? "bg-rose-600 text-white border-rose-700" : "bg-blue-600 text-white border-blue-700";
+            return (
+              <button key={inv.id} onClick={() => toggle(inv.id)}
+                className={`px-2 py-0.5 rounded-full text-[11px] font-semibold border transition ${on ? onCls : "bg-white text-stone-500 border-stone-300 hover:bg-stone-100"}`}
+                title={inv.name}>
+                {inv.id}{on ? " ✓" : ""}
+              </button>
+            );
+          })}
+        </div>
+        <div className="text-[10px] text-stone-400 mt-1 italic">Founder (Gaurav) sells the "Founder Secondary" % above</div>
+      </div>
+
+      {result.primary.pct < 0 && driveBy === 'target' && (
+        <div className="px-3 py-1.5 bg-rose-50 border-t border-rose-200 text-[11px] text-rose-800">
+          ⚠ Secondaries exceed target stake → primary went negative. Increase Target Stake or reduce exits — or just type a value directly into Primary Cash and the target stake will update.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =========================================================================
+// SUMMARY SHEET
+// =========================================================================
+
+function SummarySheet({ result, baseline, baselineLabel }) {
+  const totalP1Cash = result.p1.newInvTotal.cash;
+  const totalP2Cash = result.p2.newInvTotal.cash;
+  const totalCash = totalP1Cash + totalP2Cash;
+  const totalPrimary = result.p1.primary.cash + result.p2.primary.cash;
+  const totalSecondary = result.p1.secondary.totalCash + result.p2.secondary.totalCash;
+
+  const bTotal = baseline ? baseline.p1.newInvTotal.cash + baseline.p2.newInvTotal.cash : null;
+  const bPrimary = baseline ? baseline.p1.primary.cash + baseline.p2.primary.cash : null;
+
+  const Δ = (a, b) => b !== null ? a - b : 0;
+
+  const formatΔ = (v) => {
+    if (Math.abs(v) < 1000) return <span className="text-stone-500">—</span>;
+    const cls = v > 0 ? "text-rose-700 font-semibold" : "text-emerald-700 font-semibold";
+    return <span className={cls}>{v > 0 ? "+" : ""}₹{fmtINR(v)}</span>;
+  };
+
+  const rows = [
+    { section: "P-1 (Tranche 1)", color: "amber" },
+    { label: "Pre-money Valuation", live: tr => tr.p1.basePrice * INITIAL_SHARES, bg: baseline ? baseline.p1.basePrice * INITIAL_SHARES : null },
+    { label: "Secondary (Investor)", live: tr => tr.p1.secondary.investorCash, bg: baseline ? baseline.p1.secondary.investorCash : null },
+    { label: "Secondary (Founder)", live: tr => tr.p1.secondary.founderCash, bg: baseline ? baseline.p1.secondary.founderCash : null },
+    { label: "Secondary TOTAL", live: tr => tr.p1.secondary.totalCash, bg: baseline ? baseline.p1.secondary.totalCash : null, bold: true },
+    { label: "Primary", live: tr => tr.p1.primary.cash, bg: baseline ? baseline.p1.primary.cash : null, bold: true },
+    { label: "New-Investor Cash (P-1)", live: tr => tr.p1.newInvTotal.cash, bg: baseline ? baseline.p1.newInvTotal.cash : null, bold: true, hl: true },
+    { label: "Post-P-1 Valuation", live: tr => tr.p1.totalPostValuation, bg: baseline ? baseline.p1.totalPostValuation : null },
+    { label: "Post-P-1 New-Inv Stake", live: tr => tr.p1.newInvTotal.pct, bg: baseline ? baseline.p1.newInvTotal.pct : null, isPct: true },
+
+    { section: "P-2 (Tranche 2)", color: "emerald" },
+    { label: "Pre-money Valuation", live: tr => tr.p2.basePrice * tr.p2.startShares, bg: baseline ? baseline.p2.basePrice * baseline.p2.startShares : null },
+    { label: "Secondary (Investor)", live: tr => tr.p2.secondary.investorCash, bg: baseline ? baseline.p2.secondary.investorCash : null },
+    { label: "Secondary (Founder)", live: tr => tr.p2.secondary.founderCash, bg: baseline ? baseline.p2.secondary.founderCash : null },
+    { label: "Secondary TOTAL", live: tr => tr.p2.secondary.totalCash, bg: baseline ? baseline.p2.secondary.totalCash : null, bold: true },
+    { label: "Primary", live: tr => tr.p2.primary.cash, bg: baseline ? baseline.p2.primary.cash : null, bold: true },
+    { label: "New-Investor Cash (P-2)", live: tr => tr.p2.newInvTotal.cash, bg: baseline ? baseline.p2.newInvTotal.cash : null, bold: true, hl: true },
+    { label: "Post-P-2 Valuation", live: tr => tr.p2.totalPostValuation, bg: baseline ? baseline.p2.totalPostValuation : null },
+
+    { section: "COMBINED (P-1 + P-2)", color: "stone" },
+    { label: "TOTAL Primary Infused", live: () => totalPrimary, bg: bPrimary, bold: true, big: true },
+    { label: "TOTAL Secondary Paid Out (all)", live: () => totalSecondary, bg: baseline ? baseline.p1.secondary.totalCash + baseline.p2.secondary.totalCash : null, bold: true },
+    { label: "  ↳ to Investors (excl. Founder)", live: () => result.p1.secondary.investorCash + result.p2.secondary.investorCash, bg: baseline ? baseline.p1.secondary.investorCash + baseline.p2.secondary.investorCash : null, bold: true, hlBlue: true },
+    { label: "  ↳ to Founder (Gaurav)", live: () => result.p1.secondary.founderCash + result.p2.secondary.founderCash, bg: baseline ? baseline.p1.secondary.founderCash + baseline.p2.secondary.founderCash : null, bold: true, hlAmber: true },
+    { label: "TOTAL New-Investor Cash", live: () => totalCash, bg: bTotal, bold: true, big: true, hl: true },
+    { label: "Final New-Investor Stake (post-P-2, combined)", live: () => {
+      const newInvP1Shares = result.p1.newInvTotal.pct * result.p1.totalSharesPost;
+      const combinedShares = newInvP1Shares + result.p2.newInvTotal.shares;
+      return result.p2.totalSharesPost > 0 ? combinedShares / result.p2.totalSharesPost : 0;
+    }, bg: baseline ? (() => {
+      const newInvP1Shares = baseline.p1.newInvTotal.pct * baseline.p1.totalSharesPost;
+      const combinedShares = newInvP1Shares + baseline.p2.newInvTotal.shares;
+      return baseline.p2.totalSharesPost > 0 ? combinedShares / baseline.p2.totalSharesPost : 0;
+    })() : null, isPct: true, bold: true, big: true, hl: true },
+
+    { section: "BLENDED VALUATION (the deal in one number)", color: "amber" },
+    { label: "Blended Post-Money Valuation", live: () => computeMetrics(result).blendedPostMoney, bg: baseline ? computeMetrics(baseline).blendedPostMoney : null, bold: true, big: true, hlAmber: true },
+    { label: "Blended Pre-Money Valuation", live: () => computeMetrics(result).blendedPreMoney, bg: baseline ? computeMetrics(baseline).blendedPreMoney : null, bold: true, hlAmber: true },
+    { label: "Blended Price per Share", live: () => computeMetrics(result).blendedPPS, bg: baseline ? computeMetrics(baseline).blendedPPS : null, isCurrency: true, hlAmber: true },
+  ];
+
+  return (
+    <div className="font-mono text-[12px] text-stone-900">
+      <div className="rounded border-2 border-stone-700 overflow-hidden">
+        <table className="w-full border-collapse text-[12px] tabular-nums">
+          <thead>
+            <tr className="bg-stone-800 text-white text-[11px]">
+              <th className="border border-stone-600 px-3 py-2 text-left font-semibold">Metric</th>
+              <th className="border border-stone-600 px-3 py-2 text-right font-semibold w-40">Live</th>
+              {baseline && <th className="border border-stone-600 px-3 py-2 text-right font-semibold w-40">Baseline ({baselineLabel})</th>}
+              {baseline && <th className="border border-stone-600 px-3 py-2 text-right font-semibold w-40">Δ Change</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => {
+              if (row.section) {
+                const bg = row.color === "amber" ? "bg-amber-100" : row.color === "emerald" ? "bg-emerald-100" : "bg-stone-300";
+                const text = row.color === "amber" ? "text-amber-900" : row.color === "emerald" ? "text-emerald-900" : "text-stone-900";
+                return (
+                  <tr key={i} className={`${bg}`}>
+                    <td colSpan={baseline ? 4 : 2} className={`border border-stone-400 px-3 py-1.5 font-bold uppercase tracking-wider text-[11px] ${text}`}>{row.section}</td>
+                  </tr>
+                );
+              }
+              const liveVal = row.live(result);
+              const baseVal = row.bg;
+              const delta = baseVal !== null ? liveVal - baseVal : null;
+              const rowBg = row.hl ? "bg-yellow-50"
+                          : row.hlBlue ? "bg-blue-50"
+                          : row.hlAmber ? "bg-amber-50"
+                          : i % 2 === 0 ? "bg-white" : "bg-stone-50";
+              return (
+                <tr key={i} className={rowBg}>
+                  <td className={`border border-stone-300 px-3 py-1 ${row.bold ? "font-semibold" : ""} ${row.big ? "text-[13px]" : ""}`}>{row.label}</td>
+                  <td className={`border border-stone-300 px-3 py-1 text-right ${row.bold ? "font-semibold" : ""} ${row.big ? "text-[13px]" : ""}`}>
+                    {row.isPct ? fmtPct(liveVal, 2) : "₹" + fmtINR(liveVal)}
+                  </td>
+                  {baseline && (
+                    <td className="border border-stone-300 px-3 py-1 text-right text-stone-500">
+                      {row.isPct ? fmtPct(baseVal, 2) : "₹" + fmtINR(baseVal)}
+                    </td>
+                  )}
+                  {baseline && (
+                    <td className="border border-stone-300 px-3 py-1 text-right">
+                      {row.isPct ? <span className="text-stone-500">{((liveVal - baseVal) * 100).toFixed(2)}pp</span> : formatΔ(delta)}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[10px] text-stone-500 mt-2 italic">
+        Δ Change interpretation: <span className="text-rose-700 font-semibold">red = more capital needed</span> · <span className="text-emerald-700 font-semibold">green = less capital needed</span>.
+        For valuation rows red means higher dilution / lower valuation outcome.
+      </p>
+    </div>
+  );
+}
+
+// =========================================================================
+// MAIN APP
+// =========================================================================
+
+function CTJWCSimulator() {
+  const [state, setState] = useState(() => JSON.parse(JSON.stringify(PRESETS.current)));
+  const [activeSheet, setActiveSheet] = useState("overview");
+  const [activePreset, setActivePreset] = useState("current");
+  const [savedScenarios, setSavedScenarios] = useState([]);
+  const [saveName, setSaveName] = useState("");
+  const [showSaveInput, setShowSaveInput] = useState(false);
+  const [activeSaved, setActiveSaved] = useState(null);
+  const [baselineKey, setBaselineKey] = useState("current");  // which preset is used for Δ comparisons
+  const [presetOverrides, setPresetOverrides] = useState({});  // user-customized versions of presets
+
+  // Returns the live version of a preset (override if user has saved one, else the built-in)
+  const getEffectivePreset = (key) => presetOverrides[key] || PRESETS[key];
+
+  // Baseline is the chosen preset's effective state — every Δ is measured against this
+  const baseline = getEffectivePreset(baselineKey) || PRESETS.current;
+  const baselineLabel = (PRESETS[baselineKey] || PRESETS.current).label + (presetOverrides[baselineKey] ? " ✎" : "");
+
+  // Load saved scenarios + preset overrides from storage on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        if (storage) {
+          // Saved scenarios
+          const savedList = await storage.list("ctjwc:");
+          if (savedList && savedList.keys && !cancelled) {
+            const items = [];
+            for (const key of savedList.keys) {
+              try {
+                const got = await storage.get(key);
+                if (got && got.value) items.push({ key, ...JSON.parse(got.value) });
+              } catch {}
+            }
+            setSavedScenarios(items.sort((a, b) => b.savedAt - a.savedAt));
+          }
+          // Preset overrides
+          const overrideList = await storage.list("ctjwc-preset:");
+          if (overrideList && overrideList.keys && !cancelled) {
+            const overrides = {};
+            for (const key of overrideList.keys) {
+              const presetKey = key.replace("ctjwc-preset:", "");
+              try {
+                const got = await storage.get(key);
+                if (got && got.value) overrides[presetKey] = JSON.parse(got.value);
+              } catch {}
+            }
+            setPresetOverrides(overrides);
+            // Re-apply if currently on an overridden preset
+            if (overrides[activePreset]) {
+              setState(JSON.parse(JSON.stringify(overrides[activePreset])));
+            }
+          }
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const result = useMemo(() => computeBoth(state), [state]);
+  const baselineResult = useMemo(() => baseline ? computeBoth(baseline) : null, [baseline]);
+
+  // Detect whether the current state differs from the loaded preset / saved scenario
+  const isDirty = useMemo(() => {
+    const currentStr = JSON.stringify(state);
+    if (activePreset) {
+      const eff = getEffectivePreset(activePreset);
+      return eff && JSON.stringify(eff) !== currentStr;
+    }
+    if (activeSaved) {
+      const saved = savedScenarios.find(s => s.name === activeSaved);
+      if (saved) return JSON.stringify(saved.state) !== currentStr;
+    }
+    return true; // no source loaded → treat as dirty so save button is always available
+  }, [state, activePreset, activeSaved, savedScenarios, presetOverrides]);
+
+  // Suggest a default name when user opens the save dialog with unsaved changes
+  const suggestedSaveName = () => {
+    if (activePreset && PRESETS[activePreset]) return `${PRESETS[activePreset].label} — modified`;
+    if (activeSaved) {
+      // If "X — v2" / "X — v3" pattern, increment
+      const m = activeSaved.match(/^(.+) — v(\d+)$/);
+      if (m) return `${m[1]} — v${parseInt(m[2]) + 1}`;
+      return `${activeSaved} — v2`;
+    }
+    return "";
+  };
+
+  const loadPreset = (key) => {
+    setState(JSON.parse(JSON.stringify(getEffectivePreset(key))));
+    setActivePreset(key);
+    setActiveSaved(null);
+  };
+  // Save current state as override for the given preset key (e.g. update "Current (v16)" in place)
+  const savePreset = async (key) => {
+    if (!PRESETS[key]) return;
+    try {
+      await storage.set(`ctjwc-preset:${key}`, JSON.stringify(state));
+      setPresetOverrides(prev => ({ ...prev, [key]: JSON.parse(JSON.stringify(state)) }));
+    } catch (e) { console.error(e); }
+  };
+  // Reset preset back to its original built-in values (delete the override)
+  const resetPreset = async (key) => {
+    if (!PRESETS[key]) return;
+    if (!window.confirm(`Reset "${PRESETS[key].label}" to its original Excel values?\n\nYour customizations to this preset will be deleted.`)) return;
+    try {
+      await storage.delete(`ctjwc-preset:${key}`);
+      setPresetOverrides(prev => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      // If currently viewing this preset, reload from originals
+      if (activePreset === key) setState(JSON.parse(JSON.stringify(PRESETS[key])));
+    } catch (e) { console.error(e); }
+  };
+  const saveScenario = async () => {
+    // Auto-name if blank: e.g. "Saved 21/5 14:32"
+    let name = saveName.trim();
+    if (!name) {
+      const d = new Date();
+      name = `Saved ${d.getDate()}/${d.getMonth() + 1} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+    const key = `ctjwc:${name.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+    try {
+      const payload = { name, savedAt: Date.now(), state };
+      await storage.set(key, JSON.stringify(payload));
+      setSavedScenarios(prev => {
+        const without = prev.filter(s => s.key !== key);
+        return [...without, { key, ...payload }].sort((a, b) => b.savedAt - a.savedAt);
+      });
+      setSaveName("");
+      setShowSaveInput(false);
+      setActiveSaved(name);
+      setActivePreset(null);
+    } catch (e) { console.error(e); }
+  };
+  const loadSaved = async (key, name) => {
+    try {
+      const got = await storage.get(key);
+      if (got && got.value) {
+        const payload = JSON.parse(got.value);
+        setState(JSON.parse(JSON.stringify(payload.state)));
+        setActivePreset(null);
+        setActiveSaved(name);
+      }
+    } catch (e) { console.error(e); }
+  };
+  const deleteSaved = async (key, name) => {
+    if (!window.confirm(`Delete saved scenario "${name}"?\n\nThis cannot be undone.`)) return;
+    try {
+      await storage.delete(key);
+      setSavedScenarios(prev => prev.filter(s => s.key !== key));
+      if (activeSaved === name) setActiveSaved(null);
+    } catch (e) { console.error(e); }
+  };
+  const renameSaved = async (key, oldName) => {
+    const newName = window.prompt(`Rename "${oldName}" to:`, oldName);
+    if (!newName || newName.trim() === oldName) return;
+    const trimmed = newName.trim();
+    try {
+      // Save under new key, delete old one
+      const got = await storage.get(key);
+      if (!got || !got.value) return;
+      const payload = JSON.parse(got.value);
+      payload.name = trimmed;
+      const newKey = `ctjwc:${trimmed.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+      await storage.set(newKey, JSON.stringify(payload));
+      if (newKey !== key) await storage.delete(key);
+      setSavedScenarios(prev => prev.filter(s => s.key !== key).concat([{ key: newKey, ...payload }]).sort((a, b) => b.savedAt - a.savedAt));
+      if (activeSaved === oldName) setActiveSaved(trimmed);
+    } catch (e) { console.error(e); }
+  };
+  const exportJSON = () => {
+    const blob = new Blob([JSON.stringify({ state, computed: result }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "ct_jwc_scenario.json"; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="min-h-screen bg-stone-100 text-stone-900" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', system-ui, sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', 'Menlo', monospace; }
+      `}</style>
+
+      {/* HEADER */}
+      <header className="bg-white border-b-2 border-stone-300 sticky top-0 z-20 shadow-sm">
+        <div className="max-w-[1700px] mx-auto px-4 py-3">
+          {/* Title row + utility actions */}
+          <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+            <div>
+              <h1 className="text-xl font-bold text-stone-900">CT × JWC Investment Simulator</h1>
+              <p className="text-[11px] text-stone-500">P-1 + P-2 cap-table modeling · blended valuation · scenario comparison</p>
+            </div>
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <div className="px-2.5 py-1.5 rounded bg-stone-100 border border-stone-300 flex items-center gap-1.5" title="All Δ changes throughout the app are measured against the selected baseline">
+                <span className="text-stone-500">📊 Compare vs</span>
+                <select
+                  value={baselineKey}
+                  onChange={(e) => setBaselineKey(e.target.value)}
+                  className="bg-white border border-stone-300 rounded px-1.5 py-0.5 text-[11px] font-semibold text-stone-800 cursor-pointer hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                >
+                  {Object.entries(PRESETS).map(([key, p]) => (
+                    <option key={key} value={key}>{p.label}</option>
+                  ))}
+                </select>
+              </div>
+              <button onClick={exportJSON} className="px-2.5 py-1.5 rounded border border-stone-300 bg-white hover:bg-stone-50 font-medium flex items-center gap-1" title="Download the current scenario as a JSON file">
+                ⬇ Export JSON
+              </button>
+            </div>
+          </div>
+
+          {/* Scenarios row: presets + saved scenarios + save button — all in one obvious place */}
+          <div className="border-t border-stone-200 pt-2.5 space-y-2">
+            {/* Presets */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] uppercase tracking-widest font-bold text-stone-500 mr-1 w-20">Presets</span>
+              {Object.entries(PRESETS).map(([key, p]) => {
+                const overridden = !!presetOverrides[key];
+                return (
+                  <div key={key} className={`inline-flex rounded overflow-hidden ${activePreset === key ? "shadow-sm" : ""}`}>
+                    <button
+                      onClick={() => loadPreset(key)}
+                      className={`px-3 py-1.5 text-[11px] font-semibold border transition ${overridden ? "border-amber-500" : "border-stone-300"} ${overridden ? "rounded-l" : "rounded"} ${
+                        activePreset === key
+                          ? "bg-stone-900 text-white"
+                          : "bg-white text-stone-700 hover:bg-stone-50"
+                      }`}
+                      title={overridden ? `${p.label} (customized — click to load your version)` : p.label}
+                    >
+                      {p.label}
+                      {overridden && <span className="ml-1 text-amber-400" title="Customized version saved">✎</span>}
+                      {activePreset === key && isDirty && <span className="ml-1.5 text-amber-300" title="Unsaved changes">●</span>}
+                    </button>
+                    {overridden && (
+                      <button
+                        onClick={() => resetPreset(key)}
+                        className={`px-1.5 py-1.5 text-[11px] border border-l-0 rounded-r transition ${
+                          activePreset === key ? "border-amber-500 bg-stone-900 text-amber-300 hover:bg-rose-700 hover:text-white" : "border-amber-500 bg-amber-50 text-amber-700 hover:bg-rose-100 hover:text-rose-700"
+                        }`}
+                        title={`Reset "${p.label}" to original Excel values`}
+                      >
+                        ↺
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* My Saved Scenarios */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] uppercase tracking-widest font-bold text-amber-700 mr-1 w-20">My Saved</span>
+
+              {savedScenarios.length === 0 && (
+                <span className="text-[11px] text-stone-400 italic">no scenarios saved yet — use "+ Save Current" →</span>
+              )}
+
+              {savedScenarios.map(s => {
+                const isActive = activeSaved === s.name;
+                return (
+                  <div key={s.key} className={`inline-flex rounded border overflow-hidden ${isActive ? "border-amber-500 shadow-sm" : "border-stone-300"}`}>
+                    <button
+                      onClick={() => loadSaved(s.key, s.name)}
+                      className={`px-3 py-1.5 text-[11px] font-semibold transition flex items-center gap-1 ${
+                        isActive ? "bg-amber-500 text-white" : "bg-amber-50 text-amber-900 hover:bg-amber-100"
+                      }`}
+                      title={isActive && isDirty ? "Modified — click to revert to saved state" : `Load "${s.name}" · saved ${new Date(s.savedAt).toLocaleString()}`}
+                    >
+                      💾 {s.name}
+                      {isActive && isDirty && <span className="text-amber-200" title="Unsaved changes">●</span>}
+                    </button>
+                    <button
+                      onClick={() => renameSaved(s.key, s.name)}
+                      className={`px-2 py-1.5 text-[11px] border-l transition ${
+                        isActive ? "border-amber-600 text-white/80 hover:bg-amber-600" : "border-stone-300 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                      }`}
+                      title="Rename"
+                    >
+                      ✎
+                    </button>
+                    <button
+                      onClick={() => deleteSaved(s.key, s.name)}
+                      className={`px-2 py-1.5 text-[11px] border-l transition ${
+                        isActive ? "border-amber-600 text-white/80 hover:bg-rose-600" : "border-stone-300 text-stone-400 hover:bg-rose-100 hover:text-rose-700"
+                      }`}
+                      title="Delete"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                );
+              })}
+
+              {/* Save area: When state is modified AND a preset is active, offer "Update {preset}" alongside "Save as new" */}
+              {!showSaveInput ? (
+                <div className="inline-flex items-center gap-1.5">
+                  {/* Update preset button — only when dirty AND from a preset */}
+                  {isDirty && activePreset && PRESETS[activePreset] && (
+                    <button
+                      onClick={() => savePreset(activePreset)}
+                      className="px-3 py-1.5 rounded text-[11px] font-bold flex items-center gap-1.5 bg-stone-800 text-white border-2 border-stone-900 shadow-md hover:bg-stone-700"
+                      title={`Save current values to "${PRESETS[activePreset].label}" — overwrites the preset (stays on this machine)`}
+                    >
+                      ✎ Update "{PRESETS[activePreset].label}"
+                    </button>
+                  )}
+                  {/* Save as new (always available, prominent when dirty) */}
+                  <button
+                    onClick={() => { setShowSaveInput(true); setSaveName(isDirty ? suggestedSaveName() : ""); }}
+                    className={`px-3 py-1.5 rounded text-[11px] font-bold flex items-center gap-1.5 transition ${
+                      isDirty
+                        ? "bg-amber-500 text-white border-2 border-amber-600 shadow-md hover:bg-amber-600 ring-2 ring-amber-300"
+                        : "border border-dashed border-amber-500 bg-amber-50 hover:bg-amber-100 text-amber-800 font-semibold"
+                    }`}
+                    title={isDirty ? "Save current state as a new named scenario" : "Save the current input state as a named scenario"}
+                  >
+                    {isDirty ? "💾 Save as new…" : "+ Save Current"}
+                  </button>
+                </div>
+              ) : (
+                <div className="inline-flex items-stretch rounded overflow-hidden border-2 border-amber-500 shadow-sm">
+                  <input
+                    type="text"
+                    autoFocus
+                    onFocus={(e) => e.target.select()}
+                    placeholder="name (optional)…"
+                    value={saveName}
+                    onChange={(e) => setSaveName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") saveScenario();
+                      if (e.key === "Escape") { setShowSaveInput(false); setSaveName(""); }
+                    }}
+                    className="px-2 py-1 text-[11px] w-52 focus:outline-none"
+                  />
+                  <button
+                    onClick={saveScenario}
+                    className="px-3 py-1 text-[11px] font-semibold bg-amber-500 text-white hover:bg-amber-600 border-l border-amber-600"
+                    title="Save (or press Enter)"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={() => { setShowSaveInput(false); setSaveName(""); }}
+                    className="px-2 py-1 text-[11px] bg-white text-stone-500 hover:bg-stone-50 border-l border-amber-500"
+                    title="Cancel (or press Esc)"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-[1700px] mx-auto px-4 py-4">
+        {/* Excel-style sheet tabs at the BOTTOM of the workbook (but we put them at the top for usability) */}
+        <div className="flex border-b-2 border-stone-700 mb-0">
+          {[
+            { key: "overview", label: "Overview",   hint: "★ recommended starting view" },
+            { key: "p1",       label: "P-1 Detail", hint: "Excel-style row-by-row" },
+            { key: "p2",       label: "P-2 Detail", hint: "Excel-style row-by-row" },
+            { key: "summary",  label: "Summary",    hint: "all metrics + blended valuation" },
+          ].map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveSheet(tab.key)}
+              className={`px-4 py-2 text-[12px] font-semibold border-2 border-b-0 rounded-t mr-1 transition ${
+                activeSheet === tab.key
+                  ? "bg-white text-stone-900 border-stone-700 -mb-0.5 relative z-10"
+                  : "bg-stone-200 text-stone-600 border-stone-400 hover:bg-stone-50"
+              }`}
+            >
+              <span className="font-bold">{tab.label}</span>
+              <span className="ml-2 text-[10px] font-normal text-stone-500">{tab.hint}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="bg-white border-2 border-t-0 border-stone-700 rounded-b p-4 shadow-sm">
+          {activeSheet === "overview" && (
+            <OverviewSheet state={state} setState={setState} result={result} baselineResult={baselineResult} />
+          )}
+          {activeSheet === "p1" && (
+            <SheetView sheetKey="p1" state={state} setState={setState} p1Result={result.p1} p2Result={result.p2} />
+          )}
+          {activeSheet === "p2" && (
+            <SheetView sheetKey="p2" state={state} setState={setState} p1Result={result.p1} p2Result={result.p2} />
+          )}
+          {activeSheet === "summary" && (
+            <SummarySheet result={result} baseline={baselineResult} baselineLabel={baselineLabel} />
+          )}
+        </div>
+
+        {/* Legend — compact, single line */}
+        <div className="mt-3 rounded-lg bg-white border border-stone-200 px-4 py-2 text-[11px] text-stone-600 flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="font-bold text-stone-700">Groups:</span>
+            <span><GroupTag group="founder" /> Gaurav (74.46%)</span>
+            <span><GroupTag group="group1" /> G1 (A,B,C,D,E,F,K,M,N) — discounted exit</span>
+            <span><GroupTag group="group2" /> G2 (G,H,I,J,L) — full-price exit</span>
+          </div>
+          <span className="italic text-stone-500">recreated from CT_JWC_Post_Strat_Invest_v_16.xlsx</span>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(CTJWCSimulator));
+document.getElementById('loading').style.display = 'none';
+</script></body></html>
